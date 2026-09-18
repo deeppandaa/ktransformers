@@ -21,6 +21,9 @@
 
 #include "cpu_backend/cpuinfer.h"
 #include "cpu_backend/worker_pool.h"
+#if defined(KTRANSFORMERS_USE_ASCEND_NPU)
+#include "cpu_backend/ascend_callback_worker.h"
+#endif
 #include "operators/common.hpp"
 
 #if defined(USE_MOE_KERNEL)
@@ -51,6 +54,7 @@ static const bool _is_plain_ = false;
 #include "operators/amx/la/amx_kernels.hpp"
 #include "operators/amx/moe.hpp"
 #include "operators/amx/mxfp8-moe.hpp"  // MXFP8 MoE: FP8 E4M3fn weights × BF16 activations (MiniMax M3)
+#include "operators/amx/sft-k2-moe.hpp"
 #include "operators/amx/sft_moe.hpp"
 #include "operators/moe-sft-tp.hpp"
 #endif
@@ -60,6 +64,7 @@ static const bool _is_plain_ = false;
 #include "operators/avx2/fp8-moe.hpp"
 #include "operators/avx2/gptq_int4-moe.hpp"
 #include "operators/avx2/gptq_int4_avxvnni-moe.hpp"
+#include "operators/avx2/gptq_int4_avxvnni_packed-moe.hpp"
 #include "operators/avx2/mxfp4-moe.hpp"
 #include "operators/avx2/mxfp8-moe.hpp"
 #include "operators/avx2/rawint4-moe.hpp"
@@ -75,6 +80,7 @@ static const bool _is_plain_ = false;
 #include <memory>
 #include <type_traits>
 
+#include "fp8_layerwise_transport.hpp"
 #include "operators/kvcache/kvcache.h"
 #include "operators/llamafile/linear.h"
 #include "operators/llamafile/mla.hpp"
@@ -513,6 +519,25 @@ void bind_moe_module(py::module_& moe_module, const char* name) {
     moe_cls.def("write_weight_scale_to_buffer_task", &WriteWeightScaleToBufferBindings::cpuinfer_interface,
                 py::arg("gpu_tp_count"), py::arg("expert_id"), py::arg("w13_weight_ptrs"), py::arg("w13_scale_ptrs"),
                 py::arg("w2_weight_ptrs"), py::arg("w2_scale_ptrs"));
+
+    moe_cls.def(
+        "run_layerwise_fp8_batch",
+        [](std::shared_ptr<MoeClass> moe, const std::shared_ptr<kt::layerwise::FP8LayerwiseTransport>& transport,
+           std::uint64_t epoch, std::int64_t layer_id, int expert_count) {
+          if (!transport) throw std::invalid_argument("FP8 layerwise transport is null");
+          const int tp_size = transport->tp_size();
+          transport->run_producer(
+              epoch, layer_id, expert_count,
+              [moe, tp_size](int expert_id, const std::vector<std::uintptr_t>& w13_weight_ptrs,
+                             const std::vector<std::uintptr_t>& w13_scale_ptrs,
+                             const std::vector<std::uintptr_t>& w2_weight_ptrs,
+                             const std::vector<std::uintptr_t>& w2_scale_ptrs) {
+                moe->write_weight_scale_to_buffer(tp_size, expert_id, w13_weight_ptrs, w13_scale_ptrs, w2_weight_ptrs,
+                                                  w2_scale_ptrs);
+              });
+        },
+        py::arg("transport"), py::arg("epoch"), py::arg("layer_id"), py::arg("expert_count"),
+        py::call_guard<py::gil_scoped_release>());
   }
 }
 
@@ -537,13 +562,83 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
   m.attr("__int8_kernel__") = "unsupported";
 #endif
   m.attr("__int8_weight_layout__") = "kt-int8-n32-k64-vnni-v1";
+#if defined(USE_AMX_AVX_KERNEL) && defined(__AVX512BF16__)
+  m.attr("__rawint4_kernel__") = "amx-int4-kgroup-g32";
+#else
+  m.attr("__rawint4_kernel__") = "unsupported";
+#endif
+  m.attr("__rawint4_weight_layout__") = "compressed-tensors-rawint4-g32-v1";
 #if defined(__AVX512BF16__) && defined(__AVX512VBMI__)
   m.attr("__fp8_kernel__") = "avx512-fp8-decode-bf16";
 #else
   m.attr("__fp8_kernel__") = "unsupported";
 #endif
   m.attr("__fp8_weight_layout__") = "block-e4m3-128x128";
+  m.attr("FP8_LAYERWISE_CONTROL_BYTES") = kt::layerwise::kFP8LayerwiseControlBytes;
+  m.attr("FP8_LAYERWISE_MAX_TP_SIZE") = kt::layerwise::kFP8LayerwiseMaxTPSize;
 
+  m.def("initialize_fp8_layerwise_control", &kt::layerwise::initialize_fp8_layerwise_control,
+        py::arg("control_ptr"), py::arg("control_size"), py::arg("tp_size"));
+
+  py::class_<kt::layerwise::FP8LayerwiseTransport, std::shared_ptr<kt::layerwise::FP8LayerwiseTransport>>(
+      m, "FP8LayerwiseTransport")
+      .def(py::init<std::uintptr_t, std::size_t, int, int, int, const std::vector<std::uintptr_t>&,
+                    const std::vector<std::uintptr_t>&, const std::vector<std::uintptr_t>&,
+                    const std::vector<std::size_t>&, int, std::uint64_t>(),
+           py::arg("control_ptr"), py::arg("control_size"), py::arg("rank"), py::arg("tp_size"),
+           py::arg("cuda_device"), py::arg("local_host_ptrs"), py::arg("local_gpu_ptrs"),
+           py::arg("all_rank_host_ptrs"), py::arg("expert_nbytes"), py::arg("num_experts"),
+           py::arg("timeout_ms") = 60000)
+      .def("join", &kt::layerwise::FP8LayerwiseTransport::join, py::arg("epoch"), py::arg("layer_id"),
+           py::arg("expert_count"), py::call_guard<py::gil_scoped_release>())
+      .def(
+          "wait",
+          [](kt::layerwise::FP8LayerwiseTransport& transport, std::uint64_t epoch) {
+            kt::layerwise::FP8LayerwiseStats stats;
+            {
+              py::gil_scoped_release release;
+              stats = transport.wait(epoch);
+            }
+            py::dict result;
+            result["epoch"] = stats.epoch;
+            result["layer_id"] = stats.layer_id;
+            result["expert_count"] = stats.expert_count;
+            result["rank"] = stats.rank;
+            result["writer_ms"] = stats.writer_ms;
+            result["slot_wait_ms"] = stats.slot_wait_ms;
+            result["h2d_ms"] = stats.h2d_ms;
+            result["total_ms"] = stats.total_ms;
+            result["bytes"] = stats.bytes;
+            result["poisoned"] = stats.poisoned;
+            result["error_code"] = stats.error_code;
+            result["error_rank"] = stats.error_rank;
+            result["error_message"] = stats.error_message;
+            return result;
+          },
+          py::arg("epoch"))
+      .def("close", &kt::layerwise::FP8LayerwiseTransport::close, py::call_guard<py::gil_scoped_release>())
+      .def_property_readonly("rank", &kt::layerwise::FP8LayerwiseTransport::rank)
+      .def_property_readonly("tp_size", &kt::layerwise::FP8LayerwiseTransport::tp_size)
+      .def_property_readonly("num_experts", &kt::layerwise::FP8LayerwiseTransport::num_experts)
+      .def_property_readonly("closed", &kt::layerwise::FP8LayerwiseTransport::closed);
+
+#if defined(KTRANSFORMERS_USE_ASCEND_NPU)
+  m.def(
+      "init_ascend_callback_worker",
+      []() { kt::ascend::ensure_callback_worker(nullptr); },
+      "Start ACL aclrtProcessReport worker for stream callbacks (Ascend NPU).");
+  m.def(
+      "subscribe_ascend_stream",
+      [](intptr_t stream_handle) {
+        kt::ascend::ensure_stream_subscribed(reinterpret_cast<aclrtStream>(stream_handle));
+      },
+      py::arg("stream_handle"),
+      "Subscribe an aclrtStream with the global callback worker.");
+  m.def("shutdown_ascend_callback_worker", &kt::ascend::shutdown_callback_worker,
+        "Stop the ACL callback worker thread.");
+  m.def("is_ascend_callback_worker_running", &kt::ascend::callback_worker_running,
+        "True iff the ACL callback worker is started and dispatching reports.");
+#endif
   py::class_<WorkerPool>(m, "WorkerPool").def(py::init<int>());
   py::class_<WorkerPoolConfig>(m, "WorkerPoolConfig")
       .def(py::init<>())
@@ -880,8 +975,7 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
   // bind_moe_sft_module<AMX_SFT_MOE_TP<amx::GemmKernel224Int4_1>>(moe_module, "AMXInt4_1_SFT_MOE");
   // bind_moe_sft_module<AMX_SFT_MOE_TP<amx::GemmKernel224Int4_1_LowKGroup, AMX_AWQ_MOE_TP>>(moe_module,
   //                                                                                         "AMXInt4_1KGroup_SFT_MOE");
-  // bind_moe_sft_module<AMX_SFT_MOE_TP<amx::GemmKernel224Int4SmallKGroup, AMX_K2_MOE_TP>>(moe_module,
-  //                                                                                       "AMXInt4_KGroup_SFT_MOE");
+  bind_moe_sft_module<AMX_K2_SFT_MOE_TP<>>(moe_module, "AMXInt4_KGroup_SFT_MOE");
   // SFT MoE with SkipLoRA=true (skip all LoRA computation in backward, only compute base weight grad_input)
   bind_moe_sft_module<AMX_SFT_MOE_TP<amx::GemmKernel224BF16, AMX_BF16_MOE_TP, true>>(moe_module,
                                                                                      "AMXBF16_SFT_MOE_SkipLoRA");
@@ -905,6 +999,7 @@ PYBIND11_MODULE(kt_kernel_ext, m) {
   bind_moe_module<AVX2_MXFP8_MOE_TP<avx2::GemmKernelAVX2MXFP8>>(moe_module, "AVX2MXFP8_MOE");
   bind_moe_module<AVXVNNI256_GPTQ_INT4_MOE_TP<avxvnni::GemmKernelAVXVNNI256GPTQInt4>>(moe_module,
                                                                                       "AVXVNNI256GPTQInt4_MOE");
+  bind_moe_module<AVXVNNI256_GPTQ_INT4_PACKED_MOE_TP<>>(moe_module, "AVXVNNI256GPTQInt4Packed_MOE");
   bind_moe_module<AVXVNNI256_RAW_INT4_MOE_TP<avxvnni_rawint4::GemmKernelAVXVNNI256RawInt4>>(moe_module,
                                                                                             "AVXVNNI256RawInt4_MOE");
 #endif
