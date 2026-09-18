@@ -22,11 +22,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Fail if the PR does not have the 'run-ci' label
+      - name: Skip CI when PR does not have the 'run-ci' label
         if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'run-ci')
         run: |
-          echo "This pull request does not have the 'run-ci' label. Failing the workflow."
-          exit 1
+          echo "This pull request does not have the 'run-ci' label. KT-Kernel tests will be skipped."
 
       - name: Fail if the PR is a draft
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
@@ -47,7 +46,8 @@ jobs:
   per-commit-kt-kernel-cpu:
     needs: [check-changes]
     if: always() && !failure() && !cancelled() &&
-      (needs.check-changes.outputs.kt_kernel == 'true' || github.event_name == 'workflow_dispatch')
+      (needs.check-changes.outputs.kt_kernel == 'true' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-ci'))
     runs-on: kt-cpu
     continue-on-error: false
     steps:
