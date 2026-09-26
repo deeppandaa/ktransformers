@@ -18,21 +18,31 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       kt_kernel: ${{ steps.filter.outputs.kt_kernel }}
+      should_run: ${{ steps.gate.outputs.should_run }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Fail if the PR does not have the 'run-ci' label
-        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'run-ci')
+      - name: Determine whether KT-Kernel tests should run
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IS_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft || false }}
+          HAS_RUN_CI_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-ci') || false }}
         run: |
-          echo "This pull request does not have the 'run-ci' label. Failing the workflow."
-          exit 1
+          should_run=true
 
-      - name: Fail if the PR is a draft
-        if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
-        run: |
-          echo "This pull request is a draft. Failing the workflow."
-          exit 1
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if [[ "$IS_DRAFT" == "true" ]]; then
+              echo "This pull request is a draft. KT-Kernel tests will be skipped."
+              should_run=false
+            elif [[ "$HAS_RUN_CI_LABEL" != "true" ]]; then
+              echo "This pull request does not have the 'run-ci' label. KT-Kernel tests will be skipped."
+              should_run=false
+            fi
+          fi
+
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
 
       - name: Detect file changes
         id: filter
@@ -47,6 +57,7 @@ jobs:
   per-commit-kt-kernel-cpu:
     needs: [check-changes]
     if: always() && !failure() && !cancelled() &&
+      needs.check-changes.outputs.should_run == 'true' &&
       (needs.check-changes.outputs.kt_kernel == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: kt-cpu
     continue-on-error: false
