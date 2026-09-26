@@ -58,23 +58,25 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const { data } = await github.rest.actions.getGithubActionsPermissionsRepository({
+            const { data } = await github.rest.actions.getGithubActionsDefaultWorkflowPermissionsRepository({
               owner: context.repo.owner,
               repo: context.repo.repo,
             });
 
             const hasWritePermission = data.default_workflow_permissions === "write";
+            const canCreatePullRequests = data.can_approve_pull_request_reviews === true;
             core.setOutput("has_write_permission", String(hasWritePermission));
+            core.setOutput("can_create_pull_requests", String(canCreatePullRequests));
 
-            if (!hasWritePermission) {
+            if (!hasWritePermission || !canCreatePullRequests) {
               core.warning(
-                "Default workflow token permission is not set to write; create-pull-request may fail."
+                "Workflow token cannot open pull requests automatically; create-pull-request step will be skipped."
               );
             }
 
       - name: Create pull request
         id: create_pr
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.changed == 'true' && steps.pr_permission.outputs.has_write_permission == 'true' && steps.pr_permission.outputs.can_create_pull_requests == 'true'
         continue-on-error: true
         uses: peter-evans/create-pull-request@v6
         with:
