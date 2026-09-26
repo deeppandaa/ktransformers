@@ -55,6 +55,7 @@ jobs:
       - name: Check workflow token write permission
         id: pr_permission
         if: steps.update.outputs.changed == 'true'
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
@@ -102,7 +103,12 @@ jobs:
             dependencies
             automated
 
+      - name: Report insufficient workflow token permission
+        if: steps.update.outputs.changed == 'true' && steps.pr_permission.outputs.has_write_permission == 'false'
+        run: |
+          echo "::warning::Default workflow token permission is not set to write. The sync PR may not be created unless workflow permissions are increased."
+
       - name: Report blocked PR creation
-        if: steps.update.outputs.changed == 'true' && (steps.pr_permission.outputs.has_write_permission != 'true' || steps.create_pr.outcome == 'failure')
+        if: steps.update.outputs.changed == 'true' && steps.create_pr.outcome == 'failure'
         run: |
           echo "::warning::Unable to create PR with GITHUB_TOKEN. Enable 'Allow GitHub Actions to create and approve pull requests' in repository settings to auto-open sync PRs."
