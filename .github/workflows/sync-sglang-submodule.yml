@@ -64,7 +64,8 @@ jobs:
             });
 
             const hasWritePermission = data.default_workflow_permissions === "write";
-            const canCreatePullRequests = data.can_approve_pull_request_reviews === true;
+            const canCreatePullRequests =
+              data.allowed_to_create_and_approve_pull_requests === true;
             core.setOutput("has_write_permission", String(hasWritePermission));
             core.setOutput("can_create_pull_requests", String(canCreatePullRequests));
 
