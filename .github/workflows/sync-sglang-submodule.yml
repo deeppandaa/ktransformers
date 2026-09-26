@@ -101,7 +101,7 @@ jobs:
       - name: Report restrictive repository default permission
         if: steps.update.outputs.changed == 'true' && steps.pr_permission.outcome == 'success' && steps.pr_permission.outputs.has_write_permission == 'false'
         run: |
-          echo "::warning::Repository default workflow permission is not set to write. This is informational and may differ from this workflow's effective GITHUB_TOKEN permissions."
+          echo "::notice::Repository default workflow permission is not set to write. Diagnostic context only: this workflow may still have write scope via explicit permissions."
 
       - name: Report workflow permission check failure
         if: steps.update.outputs.changed == 'true' && steps.pr_permission.outcome == 'failure'
