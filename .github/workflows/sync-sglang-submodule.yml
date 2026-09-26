@@ -52,7 +52,7 @@ jobs:
             echo "sglang submodule updated: $OLD_SHA -> $NEW_SHA (v$VERSION)"
           fi
 
-      - name: Check workflow token write permission
+      - name: Check repository default workflow permission
         id: pr_permission
         if: steps.update.outputs.changed == 'true'
         continue-on-error: true
@@ -69,7 +69,7 @@ jobs:
 
             if (!hasWritePermission) {
               core.warning(
-                "Default workflow token permission is not set to write; create-pull-request may fail."
+                "Repository default workflow permission is not set to write; this may differ from the effective token permission used in this workflow."
               );
             }
 
@@ -103,10 +103,10 @@ jobs:
             dependencies
             automated
 
-      - name: Report insufficient workflow token permission
+      - name: Report restrictive repository default permission
         if: steps.update.outputs.changed == 'true' && steps.pr_permission.outputs.has_write_permission == 'false'
         run: |
-          echo "::warning::Default workflow token permission is not set to write. The sync PR may not be created unless workflow permissions are increased."
+          echo "::warning::Repository default workflow permission is not set to write. This is informational and may differ from this workflow's effective GITHUB_TOKEN permissions."
 
       - name: Report workflow permission check failure
         if: steps.update.outputs.changed == 'true' && steps.pr_permission.outcome == 'failure'
