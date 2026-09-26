@@ -68,12 +68,6 @@ jobs:
             const hasWritePermission = data.default_workflow_permissions === "write";
             core.setOutput("has_write_permission", String(hasWritePermission));
 
-            if (!hasWritePermission) {
-              core.warning(
-                "Repository default workflow permission is not set to write; this may differ from the effective token permission used in this workflow."
-              );
-            }
-
       - name: Create pull request
         id: create_pr
         if: steps.update.outputs.changed == 'true'
