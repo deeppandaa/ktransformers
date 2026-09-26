@@ -52,6 +52,26 @@ jobs:
             echo "sglang submodule updated: $OLD_SHA -> $NEW_SHA (v$VERSION)"
           fi
 
+      - name: Check workflow token write permission
+        id: pr_permission
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.actions.getGithubActionsPermissionsRepository({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            const hasWritePermission = data.default_workflow_permissions === "write";
+            core.setOutput("has_write_permission", String(hasWritePermission));
+
+            if (!hasWritePermission) {
+              core.warning(
+                "Default workflow token permission is not set to write; create-pull-request may fail."
+              );
+            }
+
       - name: Create pull request
         id: create_pr
         if: steps.update.outputs.changed == 'true'
@@ -83,6 +103,6 @@ jobs:
             automated
 
       - name: Report blocked PR creation
-        if: steps.update.outputs.changed == 'true' && steps.create_pr.outcome == 'failure'
+        if: steps.update.outputs.changed == 'true' && (steps.pr_permission.outputs.has_write_permission != 'true' || steps.create_pr.outcome == 'failure')
         run: |
           echo "::warning::Unable to create PR with GITHUB_TOKEN. Enable 'Allow GitHub Actions to create and approve pull requests' in repository settings to auto-open sync PRs."
