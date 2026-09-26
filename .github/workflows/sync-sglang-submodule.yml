@@ -52,7 +52,7 @@ jobs:
             echo "sglang submodule updated: $OLD_SHA -> $NEW_SHA (v$VERSION)"
           fi
 
-      - name: Check workflow token write permission
+      - name: Check workflow token PR permissions
         id: pr_permission
         if: steps.update.outputs.changed == 'true'
         continue-on-error: true
@@ -65,7 +65,10 @@ jobs:
             });
 
             const hasWritePermission = data.default_workflow_permissions === "write";
+            const canCreatePullRequests =
+              data.allowed_to_create_and_approve_pull_requests === true;
             core.setOutput("has_write_permission", String(hasWritePermission));
+            core.setOutput("can_create_pull_requests", String(canCreatePullRequests));
 
             if (!hasWritePermission) {
               core.warning(
@@ -73,9 +76,15 @@ jobs:
               );
             }
 
+            if (!canCreatePullRequests) {
+              core.warning(
+                "Repository setting 'Allow GitHub Actions to create and approve pull requests' is disabled; PR creation will be skipped."
+              );
+            }
+
       - name: Create pull request
         id: create_pr
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.changed == 'true' && steps.pr_permission.outputs.has_write_permission == 'true' && steps.pr_permission.outputs.can_create_pull_requests == 'true'
         continue-on-error: true
         uses: peter-evans/create-pull-request@v6
         with:
@@ -104,6 +113,6 @@ jobs:
             automated
 
       - name: Report blocked PR creation
-        if: steps.update.outputs.changed == 'true' && (steps.pr_permission.outputs.has_write_permission != 'true' || steps.create_pr.outcome == 'failure')
+        if: steps.update.outputs.changed == 'true' && (steps.pr_permission.outputs.has_write_permission != 'true' || steps.pr_permission.outputs.can_create_pull_requests != 'true' || steps.create_pr.outcome == 'failure')
         run: |
           echo "::warning::Unable to create PR with GITHUB_TOKEN. Enable 'Allow GitHub Actions to create and approve pull requests' in repository settings to auto-open sync PRs."
