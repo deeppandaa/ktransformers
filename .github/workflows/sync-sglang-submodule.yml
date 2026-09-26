@@ -63,9 +63,7 @@ jobs:
               repo: context.repo.repo,
             });
 
-            const allowed =
-              data.default_workflow_permissions === "write" &&
-              data.can_approve_pull_request_reviews === true;
+            const allowed = data.default_workflow_permissions === "write";
             core.setOutput("allowed", String(allowed));
 
             if (!allowed) {
