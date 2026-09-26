@@ -53,7 +53,9 @@ jobs:
           fi
 
       - name: Create pull request
+        id: create_pr
         if: steps.update.outputs.changed == 'true'
+        continue-on-error: true
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -79,3 +81,19 @@ jobs:
           labels: |
             dependencies
             automated
+
+      - name: Report manual pull request fallback
+        if: steps.update.outputs.changed == 'true' && steps.create_pr.outcome == 'failure'
+        run: |
+          {
+            echo "## sglang submodule update detected"
+            echo
+            echo "The workflow updated \`third_party/sglang\`, but GitHub Actions is not permitted to create pull requests in this repository."
+            echo
+            echo "- Branch: \`auto/sync-sglang\`"
+            echo "- Compare: ${{ github.server_url }}/${{ github.repository }}/compare/main...auto/sync-sglang"
+            echo "- Old ref: \`${{ steps.update.outputs.old_sha }}\`"
+            echo "- New ref: \`${{ steps.update.outputs.new_sha }}\`"
+            echo
+            echo "Open or update the pull request manually, or enable **Allow GitHub Actions to create and approve pull requests** in the repository Actions settings."
+          } >> "$GITHUB_STEP_SUMMARY"
