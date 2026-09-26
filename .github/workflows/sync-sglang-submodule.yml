@@ -108,6 +108,11 @@ jobs:
         run: |
           echo "::warning::Default workflow token permission is not set to write. The sync PR may not be created unless workflow permissions are increased."
 
+      - name: Report workflow permission check failure
+        if: steps.update.outputs.changed == 'true' && steps.pr_permission.outcome == 'failure'
+        run: |
+          echo "::warning::Unable to verify workflow token permissions. Proceeding with best effort PR creation."
+
       - name: Report blocked PR creation
         if: steps.update.outputs.changed == 'true' && steps.create_pr.outcome == 'failure'
         run: |
