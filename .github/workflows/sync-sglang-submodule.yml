@@ -65,12 +65,33 @@ jobs:
             });
 
             const hasWritePermission = data.default_workflow_permissions === "write";
+            const canCreatePullRequests =
+              data.can_approve_pull_request_reviews === true;
+            const permissionOk = hasWritePermission && canCreatePullRequests;
+            const blockReason = [
+              !hasWritePermission
+                ? "default workflow token permission is not set to write"
+                : null,
+              !canCreatePullRequests
+                ? "repository setting 'Allow GitHub Actions to create and approve pull requests' is disabled"
+                : null,
+            ]
+              .filter(Boolean)
+              .join("; ");
             core.setOutput("has_write_permission", String(hasWritePermission));
-            core.setOutput("permission_ok", String(hasWritePermission));
+            core.setOutput("can_create_pull_requests", String(canCreatePullRequests));
+            core.setOutput("permission_ok", String(permissionOk));
+            core.setOutput("block_reason", blockReason);
 
             if (!hasWritePermission) {
               core.warning(
                 "Default workflow token permission is not set to write; create-pull-request may fail."
+              );
+            }
+
+            if (!canCreatePullRequests) {
+              core.warning(
+                "Repository setting 'Allow GitHub Actions to create and approve pull requests' is disabled; PR creation will be skipped."
               );
             }
 
@@ -113,7 +134,7 @@ jobs:
           steps.create_pr.outcome == 'failure')
         run: |
           if [ "${{ steps.pr_permission.outputs.permission_ok }}" != "true" ]; then
-            echo "::warning::Unable to create PR with GITHUB_TOKEN because default workflow token permission is not set to write. Auto-open sync PRs require write workflow permissions and the 'Allow GitHub Actions to create and approve pull requests' setting."
+            echo "::warning::Unable to create PR with GITHUB_TOKEN because ${{ steps.pr_permission.outputs.block_reason }}. Auto-open sync PRs require write workflow permissions and the 'Allow GitHub Actions to create and approve pull requests' setting."
           else
             echo "::warning::Unable to create PR with GITHUB_TOKEN because create-pull-request failed. Verify both write workflow permissions and the 'Allow GitHub Actions to create and approve pull requests' setting; if both are already enabled, inspect the create-pull-request step logs for the underlying error."
           fi
